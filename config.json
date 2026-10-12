@@ -1,0 +1,47 @@
+{
+    "choose_browser": "patchright",
+    "choosed_mail": "outlookgraph",
+    "email_suffix": "@hotmail.com",
+    "proxy": "",
+    "bot_protection_wait": 16,
+    "max_captcha_retries": 3,
+    "concurrent_flows": 1,
+    "max_tasks": 5,
+    "sync_to_mailsieve_urls": [
+        "http://127.0.0.1:8899"
+    ],
+    "oauth2": {
+        "enable_oauth2": true,
+        "client_id": "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+        "redirect_url": "https://localhost",
+        "Scopes": [
+            "offline_access",
+            "https://outlook.office.com/IMAP.AccessAsUser.All",
+            "https://outlook.office.com/POP.AccessAsUser.All",
+            "https://outlook.office.com/SMTP.Send"
+        ]
+    },
+    "playwright": {
+        "browser_path": ""
+    },
+    "moemail": {
+        "apikey": "",
+        "base_url": "",
+        "expire_time": 3600000,
+        "max_request_retries": 5,
+        "suffix": ""
+    },
+    "outlookgraph": {
+        "strategy": "file",
+        "max_request_retries": 6,
+        "client_id": "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+        "single_email": {
+            "email": "",
+            "refresh_token": ""
+        },
+        "file": {
+            "path": "Results/recovery_pool.txt"
+        }
+    },
+    "info": "已预置免申请 Thunderbird 官方 OAuth2 client_id 与 4 段式 IMAP 辅助邮箱池支持，产出账号自动写入 Results/hotmail_4part_cards.txt 并同步至 Mail-Sieve 面板。"
+}
