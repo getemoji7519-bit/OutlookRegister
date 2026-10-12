@@ -176,17 +176,25 @@ class BaseBrowserController(ABC):
 
         lastname = fake.last_name()
         firstname = fake.first_name()
-        year = str(random.randint(1960, 2005))
+        year = str(random.randint(1975, 2002))
         month = str(random.randint(1, 12))
         day = str(random.randint(1, 28))
 
         try:
-            page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
-            consent_btn = page.get_by_text('同意并继续')
-            consent_btn.wait_for(timeout=30000)
+            page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=40000, wait_until="domcontentloaded")
             start_time = time.time()
-            self.wait_random_ratio(page, 0.06)
-            self.smooth_click(page, consent_btn)
+            # 仅中国大陆 IP 首次会弹出“个人数据导出许可 (同意并继续)”，海外家宽直接进入“新建电子邮件”
+            for _ in range(40):
+                if page.get_by_text("同意并继续").count() > 0:
+                    start_time = time.time()
+                    self.wait_random_ratio(page, 0.06)
+                    self.smooth_click(page, page.get_by_text("同意并继续"))
+                    break
+                if page.locator('[aria-label="新建电子邮件"]').count() > 0:
+                    start_time = time.time()
+                    break
+                page.wait_for_timeout(800)
+            page.locator('[aria-label="新建电子邮件"]').wait_for(state="visible", timeout=25000)
         except Exception:
             print("[Error: IP] - IP质量不佳，无法进入注册界面。")
             return False
@@ -208,6 +216,7 @@ class BaseBrowserController(ABC):
             self.wait_random_ratio(page, 0.04)
 
             pwd_input = page.locator('[type="password"]')
+            pwd_input.wait_for(state='visible', timeout=25000)
             self.smooth_type(page, pwd_input, password)
             self.wait_random_ratio(page, 0.03)
             self.smooth_click(page, primary_btn)
@@ -218,6 +227,7 @@ class BaseBrowserController(ABC):
                 return False
 
             year_input = page.locator('[name="BirthYear"]')
+            year_input.wait_for(state='visible', timeout=25000)
             if year_input.count() > 0:
                 self.smooth_click(page, year_input)
                 year_input.fill(year)
@@ -244,16 +254,25 @@ class BaseBrowserController(ABC):
             self.smooth_click(page, primary_btn)
 
             lname_input = page.locator('#lastNameInput')
-            lname_input.wait_for(state='visible', timeout=8000)
+            lname_input.wait_for(state='visible', timeout=20000)
             self.smooth_type(page, lname_input, lastname)
 
             self.wait_random_ratio(page, 0.02)
             fname_input = page.locator('#firstNameInput')
-            fname_input.wait_for(state='visible', timeout=8000)
+            fname_input.wait_for(state='visible', timeout=20000)
             self.smooth_type(page, fname_input, firstname)
 
-            if time.time() - start_time < self.wait_time / 1000:
-                page.wait_for_timeout(self.wait_time - (time.time() - start_time) * 1000)
+            # 黄金等待 1：确保 collector-*.hsprotect.net/api/v2/msft 至少完成 3 次遥测上报（_px3 签发与绑定）
+            for _ in range(45):
+                if getattr(page, "msft_count", 0) >= 3:
+                    break
+                page.wait_for_timeout(400)
+            page.wait_for_timeout(random.randint(600, 1100))
+
+            # 黄金等待 2：确保从进入页面到提交姓名表单的总时长 >= bot_protection_wait (16s)，防止因海外无弹窗填表过快触发 403
+            elapsed_ms = (time.time() - start_time) * 1000
+            if elapsed_ms < self.wait_time:
+                page.wait_for_timeout(self.wait_time - elapsed_ms + random.randint(400, 900))
 
             self.smooth_click(page, primary_btn)
             page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached', timeout=22000)
@@ -287,24 +306,93 @@ class BaseBrowserController(ABC):
             recovery_email = mail_provider.get_email()
             page.recovery_email = recovery_email
 
-            email_input = page.locator('#EmailAddress')
+            # 新版 interrupt/credentialaction 引导页：精准点击蓝色“添加电子邮件”按钮 (exact=True 避免误点上方说明段落)
+            for _ in range(4):
+                if page.locator('#EmailAddress, input[type="email"], input.fui-Input__input, input[id^="floatingLabelInput"]').count() > 0:
+                    break
+                exact_btn = page.get_by_text("添加电子邮件", exact=True)
+                if exact_btn.count() > 0:
+                    self.wait_random_ratio(page, 0.03)
+                    self.smooth_click(page, exact_btn.first)
+                    try:
+                        exact_btn.first.evaluate("el => el.click()")
+                    except Exception:
+                        pass
+                page.wait_for_timeout(2000)
+
+            email_input = page.locator('#EmailAddress, input[type="email"], input.fui-Input__input, input[id^="floatingLabelInput"], input[type="text"]').first
+            email_input.wait_for(state="visible", timeout=20000)
             self.smooth_type(page, email_input, recovery_email)
 
             self.wait_random_ratio(page, 0.03)
-            next_btn = page.locator('#iNext')
+            next_btn = page.locator('[data-testid="primaryButton"], #iNext, button[type="submit"], input[type="submit"]').first
             self.smooth_click(page, next_btn)
 
-            verify_code = mail_provider.get_verify_code()
+            # 等待进入验证码输入界面
+            for _ in range(30):
+                page.wait_for_timeout(500)
+                try:
+                    btxt = page.locator("body").inner_text()
+                    if "添加电子邮件地址" not in btxt and any(k in btxt for k in ("代码", "验证", "安全", "Code", "code")):
+                        break
+                except Exception:
+                    pass
 
-            code_input = page.locator('#iOttText')
-            self.smooth_type(page, code_input, verify_code)
+            verify_code = mail_provider.get_verify_code()
+            if not verify_code:
+                raise RuntimeError("未能从辅助邮箱收到 6 位微软安全代码")
+
+            vis_inputs = [
+                el for el in page.locator('#iOttText, input.fui-Input__input, input[type="tel"], input[type="number"], input[type="text"]').all()
+                if el.is_visible()
+            ]
+            if len(vis_inputs) >= 6:
+                self.smooth_click(page, vis_inputs[0])
+                for idx_c, ch in enumerate(verify_code[:6]):
+                    try:
+                        vis_inputs[idx_c].fill(ch)
+                        page.wait_for_timeout(90)
+                    except Exception:
+                        page.keyboard.type(ch, delay=90)
+            elif len(vis_inputs) >= 1:
+                self.smooth_type(page, vis_inputs[0], verify_code)
+            else:
+                code_input = page.locator("input").first
+                code_input.wait_for(state="visible", timeout=15000)
+                self.smooth_type(page, code_input, verify_code)
 
             self.wait_random_ratio(page, 0.03)
-            finish_btn = page.locator('#iNext')
-            self.smooth_click(page, finish_btn)
+            finish_btn = page.locator('[data-testid="primaryButton"], #iNext, button[type="submit"], input[type="submit"]')
+            if finish_btn.count() > 0 and finish_btn.first.is_visible():
+                try:
+                    if not finish_btn.first.is_disabled():
+                        self.smooth_click(page, finish_btn.first)
+                except Exception:
+                    self.smooth_click(page, finish_btn.first)
+
+            # 如果跳转后出现“保持登录状态？”等二次确认提示（KMSI）或隐私确认，自动点击通过
+            for _ in range(25):
+                page.wait_for_timeout(1000)
+                if page.locator('[aria-label="新邮件"]').count() > 0 or "outlook.live.com/mail" in page.url:
+                    break
+                for btn_txt in ("是", "继续", "确定", "下一步", "跳过", "接受"):
+                    b_loc = page.locator(f'button:has-text("{btn_txt}"), input[value="{btn_txt}"], [data-testid="primaryButton"]')
+                    if b_loc.count() > 0 and b_loc.first.is_visible():
+                        try:
+                            self.smooth_click(page, b_loc.first)
+                            break
+                        except Exception:
+                            pass
 
         except Exception as e:
             print(f"[Error: Proof Email] - {email}{self.email_suffix}注册成功，但辅助邮箱绑定失败: {e}")
+            try:
+                page.screenshot(path="/tmp/proof_error_debug.png")
+                print(f"  [Proof Debug URL]: {page.url}")
+                for el in page.locator("input, button, a, [role='button']").all():
+                    print(f"  [Proof Debug EL]: {el.evaluate('e => e.outerHTML')[:220]}")
+            except Exception:
+                pass
             filename = os.path.join(self.results_dir, 'unbound_accounts.txt')
             with open(filename, 'a', encoding='utf-8') as f:
                 f.write(f"{email}{self.email_suffix}: {password}\n")
@@ -319,17 +407,19 @@ class BaseBrowserController(ABC):
             return True
 
         try:
-            # 最多重试一次
             try:
-                page.locator('[aria-label="新邮件"]').wait_for(timeout=32000)
+                page.locator('[aria-label="新邮件"], [aria-label="New mail"]').first.wait_for(timeout=32000)
                 return True
-            except:
-                page.reload(timeout=10000)
-                page.locator('[aria-label="新邮件"]').wait_for(timeout=20000)
+            except Exception:
+                if "outlook.live.com" not in page.url:
+                    page.goto("https://outlook.live.com/mail/0/", timeout=25000, wait_until="domcontentloaded")
+                else:
+                    page.reload(timeout=15000)
+                page.locator('[aria-label="新邮件"], [aria-label="New mail"]').first.wait_for(timeout=25000)
                 return True
         except Exception:
-            print('[Error: Timeout] - 邮箱未初始化，无法正常收件。')
-            return False
+            print('[Warn: Mailbox UI Slow] - 邮箱前端加载较慢，继续尝试提取 OAuth2 Token...')
+            return True
 
 
 class BaseEmailProvider(ABC):

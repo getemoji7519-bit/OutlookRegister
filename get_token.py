@@ -30,29 +30,42 @@ def generate_code_challenge(code_verifier):
 
 
 def handle_oauth2_form(page, email, attempt):
+    page.wait_for_timeout(1500)
+    # 1. 如果出现账号选择列表或登录框
     try:
-        page.locator('[name="loginfmt"]').fill(email, timeout=15000)
-        page.locator("#idSIButton9").click(timeout=7000)
+        if page.locator('[name="loginfmt"]').count() > 0 and page.locator('[name="loginfmt"]').first.is_visible():
+            page.locator('[name="loginfmt"]').first.fill(email, timeout=5000)
+            page.locator('#idSIButton9, [data-testid="primaryButton"], [type="submit"]').first.click(timeout=5000)
+            page.wait_for_timeout(1500)
+        elif page.get_by_text(email).count() > 0:
+            page.get_by_text(email).first.click(timeout=5000)
+            page.wait_for_timeout(1500)
     except Exception:
         pass
 
+    # 2. 点击 OAuth2 权限同意按钮 (Accept / 接受 / 是)
     consent_selectors = [
         '[data-testid="appConsentPrimaryButton"]',
         "#idBtn_Accept",
         "#idSIButton9",
+        '[data-testid="primaryButton"]',
         'button:has-text("接受")',
         'button:has-text("Accept")',
         'button:has-text("是")',
+        'input[value="是"]',
+        'input[value="Accept"]',
     ]
-    timeout_val = 2500 if attempt > 0 else 15000
-    for sel in consent_selectors:
-        try:
-            btn = page.locator(sel).first
-            btn.wait_for(state="visible", timeout=timeout_val)
-            btn.click(timeout=5000)
-            break
-        except Exception:
-            timeout_val = 1500
+    for _ in range(15):
+        for sel in consent_selectors:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0 and loc.first.is_visible():
+                    loc.first.click(timeout=3000)
+                    page.wait_for_timeout(1000)
+                    break
+            except Exception:
+                pass
+        page.wait_for_timeout(600)
 
 
 def get_access_token(page, email, max_retries=3):
@@ -78,8 +91,8 @@ def _try_get_access_token(page, email, attempt):
         "redirect_uri": redirect_url,
         "scope": " ".join(SCOPES),
         "response_mode": "query",
-        "prompt": "select_account",
-        "code_challenge": code_challenge,
+        "login_hint": f"{email}{_email_suffix}",
+        "code_challenge": code_verifier if False else code_challenge,
         "code_challenge_method": "S256",
     }
 

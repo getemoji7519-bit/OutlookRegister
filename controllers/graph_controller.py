@@ -123,31 +123,34 @@ class OutlookGraphController(BaseEmailProvider):
 
         return self.email
 
-    def _fetch_code_via_imap(self) -> str | None:
-        """通过 IMAP XOAUTH2 从辅助邮箱读取最新的 6 位微软安全代码"""
-        mail = imaplib.IMAP4_SSL("outlook.office365.com", 993, timeout=15)
+    def _fetch_code_via_imap_direct(self) -> str | None:
+        """通过本地 IMAP XOAUTH2 从辅助邮箱读取最新的 6 位微软安全代码"""
+        mail = imaplib.IMAP4_SSL("outlook.office365.com", 993, timeout=10)
         try:
             auth_str = f"user={self.email}\x01auth=Bearer {self.access_token}\x01\x01".encode("utf-8")
             mail.authenticate("XOAUTH2", lambda _: auth_str)
-            mail.select("INBOX", readonly=True)
-            st, data = mail.search(None, "ALL")
-            if st != "OK" or not data or not data[0]:
-                return None
-            msg_ids = data[0].split()
-            for mid in reversed(msg_ids[-15:]):
-                st_f, msg_data = mail.fetch(mid, "(RFC822)")
-                if st_f != "OK" or not msg_data:
+            for folder in ("INBOX", "Junk"):
+                st_sel, _ = mail.select(folder, readonly=True)
+                if st_sel != "OK":
                     continue
-                for part in msg_data:
-                    if isinstance(part, tuple):
-                        msg_obj = py_email.message_from_bytes(part[1])
-                        subj = _decode_mime_str(msg_obj.get("Subject", ""))
-                        body = _extract_plain_body(msg_obj)
-                        combined = f"{subj}\n{body}"
-                        if self.masked_email.lower() in combined.lower() or "microsoft" in subj.lower() or "安全代码" in subj:
-                            m = re.search(r"(?:安全代码|Security code|代码)[:：\s]*(\d{6})", combined, re.I)
-                            if m:
-                                return m.group(1)
+                st, data = mail.search(None, "ALL")
+                if st != "OK" or not data or not data[0]:
+                    continue
+                msg_ids = data[0].split()
+                for mid in reversed(msg_ids[-5:]):
+                    st_f, msg_data = mail.fetch(mid, "(BODY.PEEK[])")
+                    if st_f != "OK" or not msg_data:
+                        continue
+                    for part in msg_data:
+                        if isinstance(part, tuple):
+                            msg_obj = py_email.message_from_bytes(part[1])
+                            subj = _decode_mime_str(msg_obj.get("Subject", ""))
+                            body = _extract_plain_body(msg_obj)
+                            combined = f"{subj}\n{body}"
+                            if self.masked_email.lower() in combined.lower():
+                                m = re.search(r"(?:安全代码|Security code|代码)[:：\s]*(\d{6})", combined, re.I)
+                                if m:
+                                    return m.group(1)
             return None
         finally:
             try:
@@ -155,18 +158,77 @@ class OutlookGraphController(BaseEmailProvider):
             except Exception:
                 pass
 
+    def _fetch_code_via_tokyo_ssh(self) -> str | None:
+        """当本地 OpenClash 连接 outlook.office365.com:993 超时时，通过 oracle-tokyo 千兆直连毫秒级读取验证码"""
+        import subprocess
+        script = f"""
+import imaplib, email, re
+from email.header import decode_header
+
+def dec(val):
+    if not val: return ""
+    return "".join(c.decode(e or "utf-8", "replace") if isinstance(c, bytes) else str(c) for c, e in decode_header(val))
+
+def body_txt(msg):
+    if msg.is_multipart():
+        for p in msg.walk():
+            if p.get_content_type() in ("text/plain", "text/html"):
+                b = p.get_payload(decode=True)
+                if b:
+                    return re.sub(r"<[^>]+>", " ", b.decode(p.get_content_charset() or "utf-8", "replace"))
+    else:
+        b = msg.get_payload(decode=True)
+        if b:
+            return re.sub(r"<[^>]+>", " ", b.decode(msg.get_content_charset() or "utf-8", "replace"))
+    return ""
+
+m = imaplib.IMAP4_SSL("outlook.office365.com", 993, timeout=12)
+auth = f"user={self.email}\\x01auth=Bearer {self.access_token}\\x01\\x01".encode()
+m.authenticate("XOAUTH2", lambda _: auth)
+for folder in ("INBOX", "Junk"):
+    st, _ = m.select(folder, readonly=True)
+    if st != "OK": continue
+    st, data = m.search(None, "ALL")
+    if st != "OK" or not data or not data[0]: continue
+    for mid in reversed(data[0].split()[-5:]):
+        st_f, md = m.fetch(mid, "(BODY.PEEK[])")
+        if st_f != "OK" or not md: continue
+        for part in md:
+            if isinstance(part, tuple):
+                obj = email.message_from_bytes(part[1])
+                comb = dec(obj.get("Subject", "")) + "\\n" + body_txt(obj)
+                if {self.masked_email.lower()!r} in comb.lower():
+                    mt = re.search(r"(?:安全代码|Security code|代码)[:：\\s]*(\\d{{6}})", comb, re.I)
+                    if mt:
+                        print("CODE:" + mt.group(1))
+                        raise SystemExit(0)
+"""
+        p = subprocess.run(["ssh", "oracle-tokyo", "python3", "-"], input=script, capture_output=True, text=True, timeout=18)
+        for line in p.stdout.splitlines():
+            if line.startswith("CODE:"):
+                return line.split("CODE:", 1)[1].strip()
+        return None
+
+    def _fetch_code_via_imap(self) -> str | None:
+        try:
+            return self._fetch_code_via_imap_direct()
+        except Exception:
+            return self._fetch_code_via_tokyo_ssh()
+
     def get_verify_code(self):
         last_error = "未获取到目标邮件"
-        for _ in range(self.max_request_retries):
+        self.page.wait_for_timeout(4000)
+        for _ in range(max(self.max_request_retries, 8)):
             self.refresh_access_token()
             try:
                 code = self._fetch_code_via_imap()
                 if code:
+                    print(f"  [IMAP XOAUTH2] 成功提取到 {self.masked_email} 的 6 位安全代码: {code}", flush=True)
                     return code
             except Exception as imap_err:
                 last_error = imap_err
 
-            self.page.wait_for_timeout(5000)
+            self.page.wait_for_timeout(4000)
         print(f"获取辅助邮箱验证码错误: {last_error}")
         raise TimeoutError
 
