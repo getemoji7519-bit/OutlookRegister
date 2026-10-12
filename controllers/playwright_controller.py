@@ -34,7 +34,11 @@ class PlaywrightController(BaseBrowserController):
 
     def get_thread_page(self):
         browser = self.get_thread_browser()
-        context = browser.new_context()
+        context = browser.new_context(
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+            viewport={"width": 1280, "height": 800},
+        )
         return context.new_page()
     
     def handle_captcha(self, page):
