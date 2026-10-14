@@ -4,9 +4,10 @@ import os
 import subprocess
 import threading
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 PORT = int(os.environ.get("PORT", 8080))
+os.environ["DISPLAY"] = ":99"
 
 current_process = None
 process_lock = threading.Lock()
@@ -19,16 +20,45 @@ def append_log(line):
         logs_buffer.pop(0)
     print(timestamped, flush=True)
 
+def ensure_xvfb():
+    try:
+        res = subprocess.run(["pgrep", "-f", "Xvfb :99"], capture_output=True)
+        if res.returncode != 0:
+            append_log("[*] Starting native Xvfb on display :99...")
+            subprocess.Popen([
+                "Xvfb", ":99",
+                "-screen", "0", "1920x1080x24",
+                "-ac", "+extension", "GLX", "+render", "-noreset"
+            ])
+            time.sleep(1)
+    except Exception as e:
+        # If pgrep isn't installed, launch Xvfb if not already running
+        try:
+            subprocess.Popen([
+                "Xvfb", ":99",
+                "-screen", "0", "1920x1080x24",
+                "-ac", "+extension", "GLX", "+render", "-noreset"
+            ])
+            time.sleep(1)
+        except Exception:
+            pass
+
 def worker_target():
     global current_process
-    append_log("[*] Starting registration run under Xvfb...")
+    ensure_xvfb()
+    append_log("[*] Starting registration worker...")
+    env = os.environ.copy()
+    env["DISPLAY"] = ":99"
+    env["PYTHONUNBUFFERED"] = "1"
+
     try:
         current_process = subprocess.Popen(
-            ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24 -ac +extension GLX +render -noreset", "python3", "-u", "main.py"],
+            ["python3", "-u", "main.py"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            env=env
         )
     except Exception as e:
         append_log(f"[!] Failed to launch worker process: {e}")
@@ -317,6 +347,18 @@ HTML_PAGE = """<!DOCTYPE html>
 </html>"""
 
 class ControllerServer(http.server.SimpleHTTPRequestHandler):
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, format, *args):
+        # Silence routine ALB health checks from polluting logs
+        if len(args) > 0 and str(args[0]).startswith("GET /health"):
+            return
+        super().log_message(format, *args)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -325,14 +367,20 @@ class ControllerServer(http.server.SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
+            try:
+                self.wfile.write(HTML_PAGE.encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
 
         if path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "healthy"}).encode("utf-8"))
+            try:
+                self.wfile.write(json.dumps({"status": "healthy"}).encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
 
         if path == "/api/logs":
@@ -341,21 +389,30 @@ class ControllerServer(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             status = get_status()
             status["logs"] = logs_buffer
-            self.wfile.write(json.dumps(status).encode("utf-8"))
+            try:
+                self.wfile.write(json.dumps(status).encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
 
         if path == "/api/config":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps(load_app_config()).encode("utf-8"))
+            try:
+                self.wfile.write(json.dumps(load_app_config()).encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
 
         if path == "/api/results":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write(read_results().encode("utf-8"))
+            try:
+                self.wfile.write(read_results().encode("utf-8"))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
 
         self.send_response(404)
@@ -401,6 +458,7 @@ class ControllerServer(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
 if __name__ == "__main__":
+    ensure_xvfb()
     print(f"[*] Starting OutlookRegister Control Panel on 0.0.0.0:{PORT}...")
     server = http.server.HTTPServer(("0.0.0.0", PORT), ControllerServer)
     server.serve_forever()
