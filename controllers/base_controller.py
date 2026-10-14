@@ -7,6 +7,7 @@ from faker import Faker
 from abc import ABC, abstractmethod
 from utils import load_config
 
+
 class BaseBrowserController(ABC):
     """
     所有浏览器通用的接口和共享逻辑
@@ -23,61 +24,54 @@ class BaseBrowserController(ABC):
         self.proxy = data['proxy']
         self.email_suffix = data['email_suffix']
 
+        if self.proxy:
+            os.environ["http_proxy"] = self.proxy
+            os.environ["https_proxy"] = self.proxy
+            os.environ["HTTP_PROXY"] = self.proxy
+            os.environ["HTTPS_PROXY"] = self.proxy
+
         self.thread_local = threading.local()
         self.cleanup_lock = threading.Lock()
-        self.active_resources = []  # 记录资源以便关闭
+        self.active_resources = []
 
         self.results_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Results')
         os.makedirs(self.results_dir, exist_ok=True)
+        # Ensure recovery_pool.txt exists so graph_controller doesn't crash on missing file
+        pool_file = os.path.join(self.results_dir, 'recovery_pool.txt')
+        if not os.path.exists(pool_file):
+            open(pool_file, 'a', encoding='utf-8').close()
 
     @abstractmethod
     def launch_browser(self):
-        """
-        获取浏览器实例,返回playwright_instance, browser_instance
-        """
         pass
 
     @abstractmethod
     def handle_captcha(self, page):
-        """
-        验证码处理流程
-        """
         pass
 
     @abstractmethod 
     def clean_up(self, page=None, type="all_browser"):
-        """
-        清理自己创建的内容
-        一个是单进程结束后关闭进程，另一个是程序结束后清除所有内容
-        """
         pass
 
     @abstractmethod
     def get_thread_page(self):
-        """
-        返回页面
-        """
+        pass
 
     def get_last_pos(self):
-        """获取当前线程的上一次鼠标位置 (x, y)"""
         return getattr(self.thread_local, 'last_pos', None)
 
     def set_last_pos(self, x, y):
-        """设置当前线程的鼠标位置 (x, y)"""
         self.thread_local.last_pos = (float(x), float(y))
 
     def reset_last_pos(self):
-        """重置当前线程的坐标历史"""
         if hasattr(self.thread_local, 'last_pos'):
             del self.thread_local.last_pos
 
     def wait_random_ratio(self, page, min_ratio, delta=0.02):
-
         actual_ratio = random.uniform(min_ratio, min_ratio + delta)
         page.wait_for_timeout(actual_ratio * self.wait_time)
 
     def smooth_move_to(self, page, target_x, target_y, steps=None):
-        """从上一次坐标滑动到目标坐标"""
         last_pos = self.get_last_pos()
         if not last_pos:
             last_pos = (random.uniform(150, 450), random.uniform(100, 350))
@@ -97,7 +91,6 @@ class BaseBrowserController(ABC):
         self.set_last_pos(target_x, target_y)
 
     def smooth_click(self, page, locator, offset_range=5, click_delay_range=(60, 160)):
-        """点击方法"""
         try:
             box = locator.bounding_box()
             if not box:
@@ -123,7 +116,6 @@ class BaseBrowserController(ABC):
             return False
 
     def smooth_type(self, page, locator, text, click_first=True):
-        """输入方法"""
         if click_first:
             self.smooth_click(page, locator)
 
@@ -133,11 +125,7 @@ class BaseBrowserController(ABC):
             except Exception:
                 break
 
-
     def get_thread_browser(self):
-        """
-        通用逻辑:获取不同进程的浏览器
-        """
         if not hasattr(self.thread_local, "browser"):
             p, b = self.launch_browser()
             if not p:
@@ -152,10 +140,6 @@ class BaseBrowserController(ABC):
         return self.thread_local.browser
 
     def get_mail_provider(self, email, page):
-        """
-        通用逻辑:获取辅助邮箱的类
-        """
-
         from .moemail_controller import MoemailController
         from .graph_controller import OutlookGraphController
 
@@ -167,10 +151,6 @@ class BaseBrowserController(ABC):
         return provider_cls(email, page) if provider_cls else None
 
     def outlook_register(self, page, email, password):
-        """
-        通用逻辑:注册邮箱
-        """
-
         self.reset_last_pos()
         fake = Faker()
 
@@ -180,38 +160,43 @@ class BaseBrowserController(ABC):
         month = str(random.randint(1, 12))
         day = str(random.randint(1, 28))
 
+        email_selector = '[aria-label="新建电子邮件"], [aria-label="New email"], input#MemberName, input[name="MemberName"]'
+
         try:
-            page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=40000, wait_until="domcontentloaded")
+            print("[*] Navigating to Microsoft Outlook registration page...")
+            page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=45000, wait_until="domcontentloaded")
             start_time = time.time()
-            # 仅中国大陆 IP 首次会弹出“个人数据导出许可 (同意并继续)”，海外家宽直接进入“新建电子邮件”
             for _ in range(40):
-                if page.get_by_text("同意并继续").count() > 0:
+                if page.get_by_text("同意并继续").count() > 0 or page.get_by_text("Accept and continue").count() > 0:
                     start_time = time.time()
                     self.wait_random_ratio(page, 0.06)
-                    self.smooth_click(page, page.get_by_text("同意并继续"))
+                    btn = page.get_by_text("同意并继续") if page.get_by_text("同意并继续").count() > 0 else page.get_by_text("Accept and continue")
+                    self.smooth_click(page, btn.first)
                     break
-                if page.locator('[aria-label="新建电子邮件"]').count() > 0:
+                if page.locator(email_selector).count() > 0:
                     start_time = time.time()
                     break
                 page.wait_for_timeout(800)
-            page.locator('[aria-label="新建电子邮件"]').wait_for(state="visible", timeout=25000)
-        except Exception:
-            print("[Error: IP] - IP质量不佳，无法进入注册界面。")
+            page.locator(email_selector).first.wait_for(state="visible", timeout=25000)
+            print("[*] Reached email creation input successfully.")
+        except Exception as e:
+            print(f"[Error: Navigation] - 无法进入注册界面: {e}")
             return False
 
         try:
             if self.email_suffix == "@hotmail.com":
                 self.wait_random_ratio(page, 0.06)
-                domain_btn = page.get_by_text("@outlook.com")
-                self.smooth_click(page, domain_btn)
-                option_btn = page.locator(f'[role="option"]:text-is("@hotmail.com")')
-                self.smooth_click(page, option_btn)
+                domain_btn = page.locator('text=@outlook.com').first
+                if domain_btn.count() > 0:
+                    self.smooth_click(page, domain_btn)
+                    option_btn = page.locator('[role="option"]:has-text("@hotmail.com")').first
+                    if option_btn.count() > 0:
+                        self.smooth_click(page, option_btn)
 
-
-            email_input = page.locator('[aria-label="新建电子邮件"]')
+            email_input = page.locator(email_selector).first
             self.smooth_type(page, email_input, email)
 
-            primary_btn = page.locator('[data-testid="primaryButton"]')
+            primary_btn = page.locator('[data-testid="primaryButton"], button#iSignupAction, button[type="submit"]').first
             self.smooth_click(page, primary_btn)
             self.wait_random_ratio(page, 0.04)
 
@@ -222,8 +207,8 @@ class BaseBrowserController(ABC):
             self.smooth_click(page, primary_btn)
             self.wait_random_ratio(page, 0.03)
 
-            if page.get_by_text("请重试。如果仍然不起作用，请稍后再试。").count() > 0:
-                print("[Error: IP or browser] - 当前IP注册频率过快。检查IP与是否为指纹浏览器并关闭了无头模式。")
+            if page.get_by_text("请重试。如果仍然不起作用，请稍后再试。").count() > 0 or page.get_by_text("Please try again").count() > 0:
+                print("[Error: IP or browser] - 当前IP注册频率过快。")
                 return False
 
             year_input = page.locator('[name="BirthYear"]')
@@ -235,21 +220,28 @@ class BaseBrowserController(ABC):
             month_btn = page.locator('[name="BirthMonth"]')
             self.smooth_click(page, month_btn)
             self.wait_random_ratio(page, 0.03)
-            m_opt = page.locator(f'[role="option"]:text-is("{month}月")')
-            self.smooth_click(page, m_opt)
+            m_opt = page.locator(f'[role="option"]:text-is("{month}月")').first
+            if m_opt.count() == 0:
+                m_opt = page.locator('[role="option"]').nth(int(month))
+            if m_opt.count() > 0:
+                self.smooth_click(page, m_opt)
 
             self.wait_random_ratio(page, 0.03)
             day_btn = page.locator('[name="BirthDay"]')
             self.smooth_click(page, day_btn)
             self.wait_random_ratio(page, 0.03)
 
-            d_opt = page.locator(f'[role="option"]:text-is("{day}日")')
+            d_opt = page.locator(f'[role="option"]:text-is("{day}日")').first
+            if d_opt.count() == 0:
+                d_opt = page.locator(f'[role="option"]:text-is("{day}")').first
+            if d_opt.count() == 0:
+                d_opt = page.locator('[role="option"]').nth(int(day))
             if d_opt.count() > 0:
                 try:
                     d_opt.scroll_into_view_if_needed()
                 except Exception:
                     pass
-            self.smooth_click(page, d_opt)
+                self.smooth_click(page, d_opt)
 
             self.smooth_click(page, primary_btn)
 
@@ -262,14 +254,12 @@ class BaseBrowserController(ABC):
             fname_input.wait_for(state='visible', timeout=20000)
             self.smooth_type(page, fname_input, firstname)
 
-            # 黄金等待 1：确保 collector-*.hsprotect.net/api/v2/msft 至少完成 3 次遥测上报（_px3 签发与绑定）
             for _ in range(45):
                 if getattr(page, "msft_count", 0) >= 3:
                     break
                 page.wait_for_timeout(400)
             page.wait_for_timeout(random.randint(600, 1100))
 
-            # 黄金等待 2：确保从进入页面到提交姓名表单的总时长 >= bot_protection_wait (16s)，防止因海外无弹窗填表过快触发 403
             elapsed_ms = (time.time() - start_time) * 1000
             if elapsed_ms < self.wait_time:
                 page.wait_for_timeout(self.wait_time - elapsed_ms + random.randint(400, 900))
@@ -290,8 +280,8 @@ class BaseBrowserController(ABC):
             if not captcha_result:
                 raise TimeoutError
 
-        except Exception:
-            print("[Error: IP] - 加载超时或因触发机器人检测导致按压次数达到最大仍未通过。")
+        except Exception as e:
+            print(f"[Error: Form/Captcha] - {e}")
             return False
 
         # --- 验证码通过后，绑定辅助邮箱服务 ---
@@ -302,11 +292,9 @@ class BaseBrowserController(ABC):
                 print(f"[Error: Config] - 未配置或不支持的邮箱系统: {self.choosed_mail}")
                 return False
 
-            # 挂载到 page 对象上，方便写入 secured_tokens.txt
             recovery_email = mail_provider.get_email()
             page.recovery_email = recovery_email
 
-            # 新版 interrupt/credentialaction 引导页：精准点击蓝色“添加电子邮件”按钮 (exact=True 避免误点上方说明段落)
             for _ in range(4):
                 if page.locator('#EmailAddress, input[type="email"], input.fui-Input__input, input[id^="floatingLabelInput"]').count() > 0:
                     break
@@ -328,7 +316,6 @@ class BaseBrowserController(ABC):
             next_btn = page.locator('[data-testid="primaryButton"], #iNext, button[type="submit"], input[type="submit"]').first
             self.smooth_click(page, next_btn)
 
-            # 等待进入验证码输入界面
             for _ in range(30):
                 page.wait_for_timeout(500)
                 try:
@@ -370,12 +357,11 @@ class BaseBrowserController(ABC):
                 except Exception:
                     self.smooth_click(page, finish_btn.first)
 
-            # 如果跳转后出现“保持登录状态？”等二次确认提示（KMSI）或隐私确认，自动点击通过
             for _ in range(25):
                 page.wait_for_timeout(1000)
-                if page.locator('[aria-label="新邮件"]').count() > 0 or "outlook.live.com/mail" in page.url:
+                if page.locator('[aria-label="新邮件"], [aria-label="New mail"]').count() > 0 or "outlook.live.com/mail" in page.url:
                     break
-                for btn_txt in ("是", "继续", "确定", "下一步", "跳过", "接受"):
+                for btn_txt in ("是", "继续", "确定", "下一步", "跳过", "接受", "Yes", "Continue", "Next", "Skip", "Accept"):
                     b_loc = page.locator(f'button:has-text("{btn_txt}"), input[value="{btn_txt}"], [data-testid="primaryButton"]')
                     if b_loc.count() > 0 and b_loc.first.is_visible():
                         try:
@@ -386,13 +372,6 @@ class BaseBrowserController(ABC):
 
         except Exception as e:
             print(f"[Error: Proof Email] - {email}{self.email_suffix}注册成功，但辅助邮箱绑定失败: {e}")
-            try:
-                page.screenshot(path="/tmp/proof_error_debug.png")
-                print(f"  [Proof Debug URL]: {page.url}")
-                for el in page.locator("input, button, a, [role='button']").all():
-                    print(f"  [Proof Debug EL]: {el.evaluate('e => e.outerHTML')[:220]}")
-            except Exception:
-                pass
             filename = os.path.join(self.results_dir, 'unbound_accounts.txt')
             with open(filename, 'a', encoding='utf-8') as f:
                 f.write(f"{email}{self.email_suffix}: {password}\n")
@@ -428,7 +407,6 @@ class BaseEmailProvider(ABC):
     """
 
     def __init__(self, email, page):
-
         self.page = page
         self.current_email = email
         self.regex = r"安全代码: (\d{6})"
@@ -438,11 +416,8 @@ class BaseEmailProvider(ABC):
 
     @abstractmethod
     def get_email(self):
-        """获取邮箱"""
         pass
 
     @abstractmethod
     def get_verify_code(self) -> str:
-        """获取验证码，注意用掩码(36^3)"""
         pass
-
