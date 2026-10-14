@@ -1,6 +1,27 @@
 import random
+from urllib.parse import urlsplit, unquote
 from patchright.sync_api import sync_playwright
 from .base_controller import BaseBrowserController
+
+
+def get_playwright_proxy_dict(proxy_str):
+    if not proxy_str:
+        return None
+    try:
+        u = urlsplit(proxy_str)
+        server = f"{u.scheme or 'http'}://{u.hostname}:{u.port}"
+        p_dict = {
+            "server": server,
+            "bypass": "localhost",
+        }
+        if u.username:
+            p_dict["username"] = unquote(u.username)
+        if u.password:
+            p_dict["password"] = unquote(u.password)
+        return p_dict
+    except Exception as e:
+        print(f"[Warn] Proxy parse error ({proxy_str}): {e}")
+        return {"server": proxy_str, "bypass": "localhost"}
 
 
 class PatchrightController(BaseBrowserController):
@@ -8,11 +29,7 @@ class PatchrightController(BaseBrowserController):
     def launch_browser(self):
         try:
             p = sync_playwright().start()
-
-            proxy_settings = {
-                "server": self.proxy,
-                "bypass": "localhost",
-            } if self.proxy else None
+            proxy_settings = get_playwright_proxy_dict(self.proxy)
 
             b = p.chromium.launch(
                 headless=False,
@@ -39,12 +56,13 @@ class PatchrightController(BaseBrowserController):
     def _find_visible_challenge_frame(self, page, timeout_loops=35):
         """
         遍历所有 iframe，过滤掉 4 个 display:none 的蜜罐 iframe，
-        精准返回当前真正可见（bounding_box 宽高 > 0）的「人工验证挑战 / 验证质询」子 Frame。
+        精准返回当前真正可见（bounding_box 宽高 > 0）的「人工验证挑战 / 验证质询 / Challenge」子 Frame。
         """
         for _ in range(timeout_loops):
             for f in page.frames:
                 try:
-                    if f.title() in ("人工验证挑战", "验证质询"):
+                    t = (f.title() or "").lower()
+                    if any(k in t for k in ("人工验证", "验证质询", "challenge", "verification", "arkose")):
                         box = f.locator("body").bounding_box()
                         if box and box["width"] > 50 and box["height"] > 20:
                             return f
@@ -62,6 +80,8 @@ class PatchrightController(BaseBrowserController):
             or page.get_by_text("让我们来保护你的帐户").count() > 0
             or page.get_by_text("帮助保护你的帐户").count() > 0
             or page.get_by_text("添加电子邮件").count() > 0
+            or page.get_by_text("Help us protect your account").count() > 0
+            or page.get_by_text("Add an email address").count() > 0
             or page.locator("#EmailAddress").count() > 0
         )
 
@@ -90,8 +110,8 @@ class PatchrightController(BaseBrowserController):
             else:
                 page.wait_for_timeout(random.randint(800, 1300))
 
-            # 优先使用真人长按「按住 人工挑战」，记录按下前的初始文本，必须按满 6.4s 且文本变为“已完成/请稍候”才松手
-            hold_btn = f.locator('[aria-label*="按住"]')
+            # 优先使用真人长按「按住 人工挑战 / Press and hold」
+            hold_btn = f.locator('[aria-label*="按住"], [aria-label*="Press and hold"], [aria-label*="press and hold"]')
             box = hold_btn.bounding_box() if hold_btn.count() > 0 else None
             if box:
                 init_txt = ""
@@ -125,16 +145,15 @@ class PatchrightController(BaseBrowserController):
                 page.mouse.up()
                 print(f"  [Captcha attempt={attempt+1}] mouse released after {held_ms}ms (completed_seen={completed_seen})", flush=True)
             else:
-                loc = f.locator('[aria-label="可访问性挑战"]')
-                self.smooth_click(page, loc)
+                loc = f.locator('[aria-label*="挑战"], [aria-label*="challenge"], [aria-label*="Challenge"]')
+                if loc.count() > 0:
+                    self.smooth_click(page, loc.first)
                 page.wait_for_timeout(random.randint(700, 1200))
-                loc2 = f.locator('[aria-label="再次按下"]')
-                self.smooth_click(page, loc2)
 
             # 等待验证通过并跳转至辅助邮箱绑定页 (#EmailAddress / account.live.com/interrupt)
             for step in range(70):
                 page.wait_for_timeout(500)
-                if page.get_by_text("一些异常活动").count() > 0 or page.get_by_text("帐户创建已被阻止").count() > 0:
+                if page.get_by_text("一些异常活动").count() > 0 or page.get_by_text("帐户创建已被阻止").count() > 0 or page.get_by_text("Unusual activity").count() > 0:
                     print("[Error: Rate limit] - 验证码已交互，但当前 IP 注册频率达到上限被风控拦截。")
                     return False
                 if self._is_post_captcha_page(page):
@@ -147,6 +166,8 @@ class PatchrightController(BaseBrowserController):
 
     def get_thread_page(self):
         browser = self.get_thread_browser()
+        if not browser:
+            return None
         tz = getattr(self, "current_timezone", None) or "Asia/Shanghai"
         context = browser.new_context(
             locale="zh-CN",
@@ -181,8 +202,11 @@ class PatchrightController(BaseBrowserController):
 
     def clean_up(self, page=None, type="all_browser"):
         if type == "done_browser" and page:
-            context = page.context
-            context.close()
+            try:
+                context = page.context
+                context.close()
+            except Exception:
+                pass
 
         elif type == "all_browser":
             for p, b in self.active_resources:
