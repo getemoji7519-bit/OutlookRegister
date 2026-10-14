@@ -9,7 +9,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install-deps chromium
+RUN apt-get update && playwright install-deps chromium && rm -rf /var/lib/apt/lists/*
 RUN playwright install chromium
 RUN patchright install chromium || true
 
