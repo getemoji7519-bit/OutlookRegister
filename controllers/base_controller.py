@@ -158,11 +158,17 @@ class BaseBrowserController(ABC):
         month = str(random.randint(1, 12))
         day = str(random.randint(1, 28))
 
-        email_selector = '[aria-label="新建电子邮件"], [aria-label="New email"], input#MemberName, input[name="MemberName"]'
+        email_selector = '[aria-label="新建电子邮件"], [aria-label="New email"], [aria-label="Email"], input#MemberName, input[name="MemberName"], input[name="email"], input[type="email"], #floatingLabelInput4'
+        primary_btn_selector = '[data-testid="primaryButton"], button#iSignupAction, button[type="submit"], button:has-text("Next"), button:has-text("下一步")'
 
         try:
             print("[*] Navigating to Microsoft Outlook registration page...")
-            page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=45000, wait_until="domcontentloaded")
+            try:
+                page.goto("https://signup.live.com/signup?lic=1", timeout=35000, wait_until="domcontentloaded")
+            except Exception as e_nav:
+                print(f"[!] Primary signup navigation failed ({e_nav}), trying fallback...")
+                page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=35000, wait_until="domcontentloaded")
+
             start_time = time.time()
             for _ in range(40):
                 if page.get_by_text("同意并继续").count() > 0 or page.get_by_text("Accept and continue").count() > 0:
@@ -182,19 +188,22 @@ class BaseBrowserController(ABC):
             return False
 
         try:
-            if self.email_suffix == "@hotmail.com":
-                self.wait_random_ratio(page, 0.06)
-                domain_btn = page.locator('text=@outlook.com').first
-                if domain_btn.count() > 0:
+            domain_btn = page.locator('text=@outlook.com').first
+            if domain_btn.count() > 0 and domain_btn.is_visible():
+                if self.email_suffix == "@hotmail.com":
+                    self.wait_random_ratio(page, 0.06)
                     self.smooth_click(page, domain_btn)
                     option_btn = page.locator('[role="option"]:has-text("@hotmail.com")').first
                     if option_btn.count() > 0:
                         self.smooth_click(page, option_btn)
+                email_input = page.locator(email_selector).first
+                self.smooth_type(page, email_input, email)
+            else:
+                full_email_val = f"{email}{self.email_suffix}"
+                email_input = page.locator(email_selector).first
+                self.smooth_type(page, email_input, full_email_val)
 
-            email_input = page.locator(email_selector).first
-            self.smooth_type(page, email_input, email)
-
-            primary_btn = page.locator('[data-testid="primaryButton"], button#iSignupAction, button[type="submit"]').first
+            primary_btn = page.locator(primary_btn_selector).first
             self.smooth_click(page, primary_btn)
             self.wait_random_ratio(page, 0.04)
 
@@ -202,6 +211,7 @@ class BaseBrowserController(ABC):
             pwd_input.wait_for(state='visible', timeout=25000)
             self.smooth_type(page, pwd_input, password)
             self.wait_random_ratio(page, 0.03)
+            primary_btn = page.locator(primary_btn_selector).first
             self.smooth_click(page, primary_btn)
             self.wait_random_ratio(page, 0.03)
 
@@ -215,32 +225,47 @@ class BaseBrowserController(ABC):
                 self.smooth_click(page, year_input)
                 year_input.fill(year)
 
-            month_btn = page.locator('[name="BirthMonth"]')
-            self.smooth_click(page, month_btn)
+            month_btn = page.locator('#BirthMonthDropdown, [name="BirthMonth"]').first
+            try:
+                month_btn.click(force=True)
+            except Exception:
+                self.smooth_click(page, month_btn)
             self.wait_random_ratio(page, 0.03)
+            page.wait_for_timeout(500)
             m_opt = page.locator(f'[role="option"]:text-is("{month}月")').first
             if m_opt.count() == 0:
-                m_opt = page.locator('[role="option"]').nth(int(month))
+                idx = max(0, min(11, int(month) - 1))
+                m_opt = page.locator('[role="option"]').nth(idx)
             if m_opt.count() > 0:
-                self.smooth_click(page, m_opt)
+                try:
+                    m_opt.click(force=True)
+                except Exception:
+                    self.smooth_click(page, m_opt)
 
             self.wait_random_ratio(page, 0.03)
-            day_btn = page.locator('[name="BirthDay"]')
-            self.smooth_click(page, day_btn)
+            page.wait_for_timeout(500)
+            day_btn = page.locator('#BirthDayDropdown, [name="BirthDay"]').first
+            try:
+                day_btn.click(force=True)
+            except Exception:
+                self.smooth_click(page, day_btn)
             self.wait_random_ratio(page, 0.03)
+            page.wait_for_timeout(500)
 
             d_opt = page.locator(f'[role="option"]:text-is("{day}日")').first
             if d_opt.count() == 0:
                 d_opt = page.locator(f'[role="option"]:text-is("{day}")').first
             if d_opt.count() == 0:
-                d_opt = page.locator('[role="option"]').nth(int(day))
+                idx = max(0, min(27, int(day) - 1))
+                d_opt = page.locator('[role="option"]').nth(idx)
             if d_opt.count() > 0:
                 try:
                     d_opt.scroll_into_view_if_needed()
+                    d_opt.click(force=True)
                 except Exception:
-                    pass
-                self.smooth_click(page, d_opt)
+                    self.smooth_click(page, d_opt)
 
+            primary_btn = page.locator(primary_btn_selector).first
             self.smooth_click(page, primary_btn)
 
             lname_input = page.locator('#lastNameInput')
@@ -262,6 +287,7 @@ class BaseBrowserController(ABC):
             if elapsed_ms < self.wait_time:
                 page.wait_for_timeout(self.wait_time - elapsed_ms + random.randint(400, 900))
 
+            primary_btn = page.locator(primary_btn_selector).first
             self.smooth_click(page, primary_btn)
             page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached', timeout=22000)
             page.wait_for_timeout(400)
