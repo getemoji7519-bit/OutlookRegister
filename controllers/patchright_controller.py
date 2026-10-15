@@ -34,7 +34,7 @@ class PatchrightController(BaseBrowserController):
             b = p.chromium.launch(
                 headless=False,
                 args=[
-                    "--lang=zh-CN",
+                    "--lang=en-US",
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--use-gl=angle",
@@ -168,9 +168,9 @@ class PatchrightController(BaseBrowserController):
         browser = self.get_thread_browser()
         if not browser:
             return None
-        tz = getattr(self, "current_timezone", None) or "Asia/Shanghai"
+        tz = getattr(self, "current_timezone", None) or "America/New_York"
         context = browser.new_context(
-            locale="zh-CN",
+            locale="en-US",
             timezone_id=tz,
             viewport={"width": 1280, "height": 800},
         )

@@ -158,7 +158,7 @@ class BaseBrowserController(ABC):
         month = str(random.randint(1, 12))
         day = str(random.randint(1, 28))
 
-        email_selector = '[aria-label="新建电子邮件"], [aria-label="New email"], [aria-label="Email"], input#MemberName, input[name="MemberName"], input[name="email"], input[type="email"], #floatingLabelInput4'
+        email_selector = 'input[type="email"], input[name="email"], input#MemberName, input[name="MemberName"], input[id^="floatingLabelInput"], [aria-label*="email" i], [aria-label*="邮件"]'
         primary_btn_selector = '[data-testid="primaryButton"], button#iSignupAction, button[type="submit"], button:has-text("Next"), button:has-text("下一步")'
 
         try:
@@ -171,13 +171,15 @@ class BaseBrowserController(ABC):
 
             start_time = time.time()
             for _ in range(40):
-                if page.get_by_text("同意并继续").count() > 0 or page.get_by_text("Accept and continue").count() > 0:
-                    start_time = time.time()
-                    self.wait_random_ratio(page, 0.06)
-                    btn = page.get_by_text("同意并继续") if page.get_by_text("同意并继续").count() > 0 else page.get_by_text("Accept and continue")
-                    self.smooth_click(page, btn.first)
-                    break
-                if page.locator(email_selector).count() > 0:
+                consent_btn = page.locator('#nextButton, button:has-text("同意并继续"), button:has-text("Accept and continue")').first
+                if consent_btn.count() > 0 and consent_btn.is_visible():
+                    try:
+                        self.smooth_click(page, consent_btn)
+                    except Exception:
+                        consent_btn.click(force=True)
+                    page.wait_for_timeout(2500)
+
+                if page.locator(email_selector).count() > 0 and page.locator(email_selector).first.is_visible():
                     start_time = time.time()
                     break
                 page.wait_for_timeout(800)
