@@ -23,25 +23,28 @@ def append_log(line):
 def ensure_xvfb():
     try:
         res = subprocess.run(["pgrep", "-f", "Xvfb :99"], capture_output=True)
-        if res.returncode != 0:
-            append_log("[*] Starting native Xvfb on display :99...")
-            subprocess.Popen([
-                "Xvfb", ":99",
-                "-screen", "0", "1920x1080x24",
-                "-ac", "+extension", "GLX", "+render", "-noreset"
-            ])
-            time.sleep(1)
-    except Exception as e:
-        # If pgrep isn't installed, launch Xvfb if not already running
+        if res.returncode == 0:
+            return
+    except Exception:
+        pass
+
+    for lock in ["/tmp/.X99-lock", "/tmp/.X11-unix/X99"]:
         try:
-            subprocess.Popen([
-                "Xvfb", ":99",
-                "-screen", "0", "1920x1080x24",
-                "-ac", "+extension", "GLX", "+render", "-noreset"
-            ])
-            time.sleep(1)
+            if os.path.exists(lock):
+                os.remove(lock)
         except Exception:
             pass
+
+    append_log("[*] Starting native Xvfb on display :99...")
+    try:
+        subprocess.Popen([
+            "Xvfb", ":99",
+            "-screen", "0", "1920x1080x24",
+            "-ac", "+extension", "GLX", "+render", "-noreset"
+        ])
+        time.sleep(1)
+    except Exception as e:
+        append_log(f"[!] Warning launching Xvfb: {e}")
 
 def worker_target():
     global current_process
@@ -457,8 +460,13 @@ class ControllerServer(http.server.SimpleHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+class SilentHTTPServer(http.server.HTTPServer):
+    def handle_error(self, request, client_address):
+        # Gracefully suppress BrokenPipeError / ConnectionResetError from ALB health probes
+        pass
+
 if __name__ == "__main__":
     ensure_xvfb()
-    print(f"[*] Starting OutlookRegister Control Panel on 0.0.0.0:{PORT}...")
-    server = http.server.HTTPServer(("0.0.0.0", PORT), ControllerServer)
+    print(f"[*] Starting OutlookRegister Control Panel on 0.0.0.0:{PORT}...", flush=True)
+    server = SilentHTTPServer(("0.0.0.0", PORT), ControllerServer)
     server.serve_forever()
