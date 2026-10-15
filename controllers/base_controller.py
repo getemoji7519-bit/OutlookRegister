@@ -25,10 +25,8 @@ class BaseBrowserController(ABC):
         self.email_suffix = data['email_suffix']
 
         if self.proxy:
-            os.environ["http_proxy"] = self.proxy
-            os.environ["https_proxy"] = self.proxy
-            os.environ["HTTP_PROXY"] = self.proxy
-            os.environ["HTTPS_PROXY"] = self.proxy
+            for env_key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+                os.environ[env_key] = self.proxy
 
         self.thread_local = threading.local()
         self.cleanup_lock = threading.Lock()
